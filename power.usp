@@ -1,0 +1,5 @@
+[_TR4K]
+Project Define:
+IM=power.asm
+INCLUDE=power.inc
+GROUP=153
