@@ -12,13 +12,13 @@
 ; 4. PA3 = unused
 ; 
 ; 5. PA2 = LED        (active low output)
-; 6. PA1 = PWR_CTRL_1 (input)
-; 7. PA0 = PWR_CTRL_2 (input)
+; 6. PA1 = PWR_CTRL_1 (active high input)
+; 7. PA0 = PWR_CTRL_2 (active high output)
 ; 8. GND
 ; 
 ; GPIO
-; PA0 = PWR_CTRL_2/LED3 = input
-; PA1 = PWR_CTRL_1/LED2 = input
+; PA0 = PWR_CTRL_2/LED3 = output tx
+; PA1 = PWR_CTRL_1/LED2 = input rx
 ; PA2 = LED             = output high
 ; PA3 = unused          = input pull high
 ; PB0 = PWR             = output high
@@ -29,8 +29,7 @@
 ; -----------------------------------------------------------------------------
 ; Behaviour of inputs
 ; 
-; PWR_CTRL_1 signal = ignored until we know what it is for - probably for the CPU to tell us to turn off
-; PWR_CTRL_2 signal = ignored until we know what it is for - probably for us to warn the CPU of imminant power off
+; PWR_CTRL_1 signal = (input from cpu) - probably for the CPU to tell us to turn off, and that it is done
 ; USR = press this button for a small amount of time in order to trigger power off
 ; 
 ; -----------------------------------------------------------------------------
@@ -40,11 +39,13 @@
 ;       On power off turn this off (after the LED sequence).
 ; LED = on power on, turn on after a short delay
 ;       on power off, flash thrice and turn off
+; PWR_CTRL_2 signal = (output to cpu) - ignored for nowr - for us to warn the CPU of imminent power off
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
 ; Defines
 ; -----------------------------------------------------------------------------
+
 
 ; -----------------------------------------------------------------------------
 ; Include Block
@@ -89,6 +90,14 @@ BIT_USR		equ	1 << PIN_USR
 PORT_LED	equ	data_pa
 PIN_LED		equ	2
 BIT_LED		equ	1 << PIN_LED
+
+PORT_RX		equ	data_pa
+PIN_RX		equ	1
+BIT_RX		equ	1 << PIN_RX
+
+PORT_TX		equ	data_pa
+PIN_TX		equ	0
+BIT_TX		equ	1 << PIN_TX
 
 ; -----------------------------------------------------------------------------
 ; PROGRAM Entry points
@@ -256,7 +265,7 @@ MAIN_LOOP:
 	nop	; paranoid
 
 	; Check the output direction
-	ld	a,#0100b
+	ld	a,#0100b	; ...WILL CHANGE
 	ld	(IOC_PA),a	; Port A direction (0=input/1=output)
 	ld	a,#0001b
 	ld	(IOC_PB),a	; Port B dir (0=input/1=output)
@@ -302,7 +311,7 @@ NotSaturated:
 
 	; Have we pressed the button?
 	ld	a,(ButtonInit)
-	jz	StillInit
+	jnz	StillInit
 	ld	A,(ButtonOn)
 	jz	StillOff
 	ld	a,#1
@@ -311,13 +320,13 @@ StillOff:
 StillInit:
 
 	; Have we released the button after a press?
-	ld	(ButtonOn),A
+	ld	A,(ButtonOn)
 	jnz	StillOn
-	ld	(ButtonPress),A
+	ld	A,(ButtonPress)
 	jz	StillOn
 	; We have pressed and released the button: trigger the off sequence
 	ld	A,(PowerOff)
-	jz	StillOn
+	jnz	StillOn
 	; Start the sequence
 	ld	a,#1
 	ld	(PowerOff),A
@@ -363,10 +372,18 @@ PowerStillOn:
 ; -----------------------------------------------------------------------------
 ; Turn off the power to the CPU
 PowerNowOff:
-	ld	a,#1000b
+	ld	a,#1100b	; ...WILL CHANGE
 	ld	(data_pa),a	; Port A data (0=low/1=high)
 	ld	a,#0000b
 	ld	(data_pb),a	; Port B data (0=low/1=high)
+
+	; Wait 200ms
+	ld	a,(g_timer2)
+	clr	c
+	adc	a,#8
+Wait2_irq:
+	cmp	a,(g_timer2)
+	jnz	Wait2_irq
 
 	clr	#1,(SYS0) ; Clear ENINT and disable interrupts
 	nop
@@ -378,11 +395,11 @@ HaltEnd:
 
 ; -----------------------------------------------------------------------------
 PODY_IO_Init:
-	; PIN A0  LED3    (active unknown)  = input no pull
-	; PIN A1  LED2    (active unknown)  = input no pull
+	; PIN A0  LED3    (active high)     = input pull low
+	; PIN A1  LED2    (active high)     = input no pull (will be output)
 	; PIN A2  LED     (active low)      = output high
 	; PIN A3          (unused)          = input pull high
-	ld	a,#0100b
+	ld	a,#0100b	; ...WILL CHANGE
 	ld	(IOC_PA),a	; Port A direction (0=input/1=output)
 	ld	a,#1100b
 	ld	(data_pa),a	; Port A data (0=low/1=high)
@@ -390,7 +407,7 @@ PODY_IO_Init:
 	ld	exio(pawk),a	; Port A wakeup - none
 	ld	a,#1000b
 	ld	exio(papu),a	; Port A pull up 100kOhm resistor
-	ld	a,#0000b
+	ld	a,#0010b
 	ld	exio(papl),a	; Port A pull down 100kOhm resistor
 
 	; Pin B0 PWR      (active high) = output high
