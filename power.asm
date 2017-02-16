@@ -29,8 +29,8 @@
 ; -----------------------------------------------------------------------------
 ; Behaviour of inputs
 ; 
-; PWR_CTRL_1 signal = ignored until we know what it is for
-; PWR_CTRL_2 signal = ignored until we know what it is for
+; PWR_CTRL_1 signal = ignored until we know what it is for - probably for the CPU to tell us to turn off
+; PWR_CTRL_2 signal = ignored until we know what it is for - probably for us to warn the CPU of imminant power off
 ; USR = press this button for a small amount of time in order to trigger power off
 ; 
 ; -----------------------------------------------------------------------------
@@ -39,7 +39,7 @@
 ; PWR = On power on, turn this on.
 ;       On power off turn this off (after the LED sequence).
 ; LED = on power on, turn on after a short delay
-;       on power off, flash twice and turn off
+;       on power off, flash thrice and turn off
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
@@ -59,13 +59,36 @@
 VARRM = {
 ; -------------------------------------
 ; System variables
-A_SRT          ; Save the A register during an interrupt
+A_SRT           ; Save the A register during an interrupt
+g_timer0	; Counts up every   0.1ms
+g_timer1	; Counts up every   1.6ms
+g_timer2	; Counts up every  25.6ms
+g_timer3	; Counts up every 409.6ms
+ButtonCnt0	; How many samples 1.6ms of the button have been off?
+ButtonCnt1	; How many samples 1.6ms of the button have been on?
+ButtonOn	; Is the button on (1) or off (0)?
+ButtonPress	; Has the button been pressed?
+ButtonInit      ; Are we in the initial phase (where the button might be on)?
+PowerOff	; Power off the device
+off_timer0	; Counts up every   1.6ms
+off_timer1	; Counts up every  25.6ms
+off_phase	; Counts up every 307.2ms (phases: LED 0=off 1=on 2=off 3=on 4=off 5=on 6=poweroff)
 }
+
 
 ; -----------------------------------------------------------------------------
 ; General Parameters for the program
-VINT_MAH        equ 00    ; The SRAM bank we want to use inside the interrupt [Mind you, Optima overrides this]
+VINT_MAH        equ	00    ; The SRAM bank we want to use inside the interrupt [Mind you, Optima overrides this]
 
+Tim2_Speed	equ	256-100	; 100uS = 10kHz
+
+PORT_USR	equ	data_pb
+PIN_USR		equ	1
+BIT_USR		equ	1 << PIN_USR
+
+PORT_LED	equ	data_pa
+PIN_LED		equ	2
+BIT_LED		equ	1 << PIN_LED
 
 ; -----------------------------------------------------------------------------
 ; PROGRAM Entry points
@@ -122,7 +145,14 @@ Timer1_Acked:
 	ld	a,(STATUS)
 	and	A,#1000B
 	jz	Timer2_Acked
+
+	; Timer 2 interrupt
 	clr	#3,(STATUS) ; Clear the timer2 interrupt flag
+	inc	(g_timer0)
+	adr	(g_timer1)
+	adr	(g_timer2)
+	adr	(g_timer3)
+	
 Timer2_Acked:
 	
 	ld	a,(A_SRT) ; Restore the A register
@@ -186,8 +216,24 @@ DELAY1:
 	ldpch	Clear_SRAM_INIT
 	call	Clear_SRAM_INIT
 	
+	; Setup timer2 interrupt every 100uS
+	ldmah	#0
+	ldpch	Timer2_Init
+	call	Timer2_Init
+
 	; Turn on the LED
-	clr	#2,(data_pa)
+	clr	#PIN_LED,(PORT_LED)
+	
+	; Initialise the button variables
+	ld	a,#15
+	ld	(ButtonCnt1),A
+	ld	a,#0
+	ld	(ButtonCnt0),A
+	ld	(ButtonPress),A
+	ld	(PowerOff),A
+	ld	a,#1
+	ld	(ButtonOn),A
+	ld	(ButtonInit),A
 
 ; -----------------------------------------------------------------------------
 ; Where wakeup code would return to
@@ -215,8 +261,120 @@ MAIN_LOOP:
 	ld	a,#0001b
 	ld	(IOC_PB),a	; Port B dir (0=input/1=output)
 
+	; Throttle the main loop to 1.6ms
+	ld	a,(g_timer1)
+Wait_irq:
+	cmp	a,(g_timer1)
+	jz	Wait_irq
+	
+	; Check for input from user and debounce it (25ms required)
+	ld	a,(PORT_USR)
+	and	a,#BIT_USR
+	jz	Main_UsrLow
+
+	; Usr pin is high, hence pressed. Debounce this.
+	ld	a,#0
+	ld	(ButtonCnt0),a
+	ld	a,(ButtonCnt1)
+	cmp	a,#15
+	jz	Saturated1
+	inc	(ButtonCnt1)
+	jmp	NotSaturated
+	
+Main_UsrLow:
+	; Usr pin is low, hence released. Debounce this.
+	ld	a,#0
+	ld	(ButtonCnt1),a
+	ld	a,(ButtonCnt0)
+	cmp	a,#15
+	jz	Saturated0
+	inc	(ButtonCnt0)
+	jmp	NotSaturated
+Saturated0:
+	ld	a,#0
+	ld	(ButtonOn),a
+	ld	(ButtonInit),A
+	jmp	NotSaturated
+Saturated1:
+	ld	a,#1
+	ld	(ButtonOn),a
+NotSaturated:
+
+	; Have we pressed the button?
+	ld	a,(ButtonInit)
+	jz	StillInit
+	ld	A,(ButtonOn)
+	jz	StillOff
+	ld	a,#1
+	ld	(ButtonPress),a
+StillOff:
+StillInit:
+
+	; Have we released the button after a press?
+	ld	(ButtonOn),A
+	jnz	StillOn
+	ld	(ButtonPress),A
+	jz	StillOn
+	; We have pressed and released the button: trigger the off sequence
+	ld	A,(PowerOff)
+	jz	StillOn
+	; Start the sequence
+	ld	a,#1
+	ld	(PowerOff),A
+	ld	a,#0
+	ld	(off_timer0),a
+	ld	(off_timer1),a
+	ld	(off_phase),a
+StillOn:
+
+	; Perform power off sequence
+	ld	A,(PowerOff)
+	jz	PowerStillOn
+	inc	(off_timer0)
+	adr	(off_timer1)
+	ld	a,(off_timer1)
+	cmp	a,#12
+	jnz	PowerSamePhase
+	; Increase the phase every 300 ms
+	ld	a,#0
+	ld	(off_timer1),a
+	ld	(off_timer0),a ; Unneeded
+	inc	(off_phase)
+	ld	a,(off_phase)
+	cmp	a,#6
+	jz	PowerNowOff ; We are in the turn off phase
+PowerSamePhase:
+
+	; Set the visible LED on or off
+	ld	a,(off_phase)
+	and	a,#1
+	jz	PowerOffLed
+	; Turn on the LED
+	clr	#PIN_LED,(PORT_LED)
+	jmp	PowerStillOn
+PowerOffLed:
+	set	#PIN_LED,(PORT_LED)
+	
+PowerStillOn:
+
 	LDPCH	MAIN_LOOP
 	JMP	MAIN_LOOP
+	
+; -----------------------------------------------------------------------------
+; Turn off the power to the CPU
+PowerNowOff:
+	ld	a,#1000b
+	ld	(data_pa),a	; Port A data (0=low/1=high)
+	ld	a,#0000b
+	ld	(data_pb),a	; Port B data (0=low/1=high)
+
+	clr	#1,(SYS0) ; Clear ENINT and disable interrupts
+	nop
+	nop
+	halt 
+HaltEnd:
+	ldpch	HaltEnd
+	jmp	HaltEnd
 
 ; -----------------------------------------------------------------------------
 PODY_IO_Init:
@@ -288,6 +446,39 @@ Clear_SRAM_INIT:
 	ld	(3DH),A
 	ld	(3EH),A
 	ld	(3FH),A	 
+	rets
+
+; -----------------------------------------------------------------------------
+; Set up timer 2 for 100uS interrupt (10kHz) +/- 2%
+; High speed oscillator HRCOSC = 32Mhz
+; CPU clock FMCK = /4 = 8Mhz
+; Scaler2 = Div8 = 1MHz
+; Timer2 = 0x9C = 10kHz
+Timer2_Init:
+	ld	a,#0
+	ld	(TMCTL),A;3:TM2EN,2:TM1EN,1:TM1SCK,0:TM1ALD
+	nop 
+	set	#3,(TMCTL)
+	set	#3,(SYS0) ;3:TM2SK,2:TM1SK,1:ENINI,0:PWM0
+
+	clr	#1,(SYS0) ; Clear ENINI (disable interrupts)
+	nop	; Safety measure from clearing global interrupts
+	clr	#0,(SYS0) ; Clear PWM0 mode
+	nop
+
+	; Set Timer2 Autoload enabled and scalar to div8 (i.e. 1Mhz)
+	ld	a,#1101b
+	ld	(SCALER2),A ;div2-div1-div0. 8M/8=1. auto download
+
+	; timing = (256 - time val/(time clock)) so 0xCE is 50uS
+	ld	A,#Tim2_Speed.N0 ; Low nybble
+	ld	(TIM2),A
+	ld	A,#Tim2_Speed.N1 ; High nybble
+	ld	(TIM2),A
+
+;	set	#1,(SYS0) ; Set ENINI
+	nop
+Timr2_Init_End:
 	rets
 
 ; -----------------------------------------------------------------------------
