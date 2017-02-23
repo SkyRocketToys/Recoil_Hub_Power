@@ -18,18 +18,18 @@
 ; 
 ; GPIO
 ; PA0 = PWR_CTRL_2/LED3 = output tx
-; PA1 = PWR_CTRL_1/LED2 = input rx
-; PA2 = LED             = output high
+; PA1 = PWR_CTRL_1/LED2 = input rx (high when button pressed on board)
+; PA2 = LED             = output high (on or flashing)
 ; PA3 = unused          = input pull high
 ; PB0 = PWR             = output high
-; PB1 = USR             = input pull low
+; PB1 = USR             = input pull low (high when button pressed on board)
 ; 
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
 ; Behaviour of inputs
 ; 
-; PWR_CTRL_1 signal = (input from cpu) - probably for the CPU to tell us to turn off, and that it is done
+; PWR_CTRL_1 signal = (input from cpu) - CPU should raise this to turn the power off, then lower it when it is done.
 ; USR = press this button for a small amount of time in order to trigger power off
 ; 
 ; -----------------------------------------------------------------------------
@@ -38,8 +38,8 @@
 ; PWR = On power on, turn this on.
 ;       On power off turn this off (after the LED sequence).
 ; LED = on power on, turn on after a short delay
-;       on power off, flash thrice and turn off
-; PWR_CTRL_2 signal = (output to cpu) - ignored for nowr - for us to warn the CPU of imminent power off
+;       on power off, flash a few times and turn off
+; PWR_CTRL_2 signal = (output to cpu) - we raise this to warn the CPU of imminent power off
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
@@ -73,7 +73,9 @@ ButtonInit      ; Are we in the initial phase (where the button might be on)?
 PowerOff	; Power off the device
 off_timer0	; Counts up every   1.6ms
 off_timer1	; Counts up every  25.6ms
-off_phase	; Counts up every 307.2ms (phases: LED 0=off 1=on 2=off 3=on 4=off 5=on 6=poweroff)
+off_phase0	; Counts up every 307.2ms (phases: LED 0=off 1=on 2=off 3=on 4=off 5=on 6=poweroff)
+off_phase1	; 
+cpu_rx		; The value (0 or BIT_RX) of the cpu at the time the decision was made to power off
 }
 
 
@@ -82,6 +84,10 @@ off_phase	; Counts up every 307.2ms (phases: LED 0=off 1=on 2=off 3=on 4=off 5=o
 VINT_MAH        equ	00    ; The SRAM bank we want to use inside the interrupt [Mind you, Optima overrides this]
 
 Tim2_Speed	equ	256-100	; 100uS = 10kHz
+
+PORT_PWR	equ	data_pb
+PIN_PWR		equ	0
+BIT_PWR		equ	1 << PIN_PWR
 
 PORT_USR	equ	data_pb
 PIN_USR		equ	1
@@ -98,6 +104,9 @@ BIT_RX		equ	1 << PIN_RX
 PORT_TX		equ	data_pa
 PIN_TX		equ	0
 BIT_TX		equ	1 << PIN_TX
+
+TIMEOUT_FAST	equ	6	; Timeout if CPU acknowledges me
+TIMEOUT_SLOW	equ	30	; Timeout if CPU does not acknowledge
 
 ; -----------------------------------------------------------------------------
 ; PROGRAM Entry points
@@ -265,7 +274,7 @@ MAIN_LOOP:
 	nop	; paranoid
 
 	; Check the output direction
-	ld	a,#0100b	; ...WILL CHANGE
+	ld	a,#0101b	; 
 	ld	(IOC_PA),a	; Port A direction (0=input/1=output)
 	ld	a,#0001b
 	ld	(IOC_PB),a	; Port B dir (0=input/1=output)
@@ -333,7 +342,12 @@ StillInit:
 	ld	a,#0
 	ld	(off_timer0),a
 	ld	(off_timer1),a
-	ld	(off_phase),a
+	ld	(off_phase0),a
+	ld	(off_phase1),a
+	ld	a,(PORT_RX)
+	and	a,#BIT_RX
+	ld	(cpu_rx),a
+	set	#PIN_TX,(PORT_TX) ; Tell the CPU we are switching off
 StillOn:
 
 	; Perform power off sequence
@@ -348,14 +362,33 @@ StillOn:
 	ld	a,#0
 	ld	(off_timer1),a
 	ld	(off_timer0),a ; Unneeded
-	inc	(off_phase)
-	ld	a,(off_phase)
-	cmp	a,#6
-	jz	PowerNowOff ; We are in the turn off phase
+	inc	(off_phase0)
+	adr	(off_phase1)
+
+	ld	a,(PORT_RX)
+	and	a,#BIT_RX
+	xor	a,(cpu_rx)
+	jz	PowerWaitCpu
+	; Fast timeout
+	ld	a,(off_phase0)
+	cmp	a,#TIMEOUT_FAST.n0
+	ld	a,(off_phase1)
+	sbc	a,#TIMEOUT_FAST.n1
+	jnc	PowerNowOff ; We are in the turn off phase
+	jmp	PowerSamePhase
+
+	; We are in shut down phase and CPU has not acknowledged yet
+PowerWaitCpu:
+	ld	a,(off_phase0)
+	cmp	a,#TIMEOUT_SLOW.n0
+	ld	a,(off_phase1)
+	sbc	a,#TIMEOUT_SLOW.n1
+	jnc	PowerNowOff ; We are in the turn off phase
+	
 PowerSamePhase:
 
 	; Set the visible LED on or off
-	ld	a,(off_phase)
+	ld	a,(off_phase0)
 	and	a,#1
 	jz	PowerOffLed
 	; Turn on the LED
@@ -372,12 +405,17 @@ PowerStillOn:
 ; -----------------------------------------------------------------------------
 ; Turn off the power to the CPU
 PowerNowOff:
-	ld	a,#1100b	; ...WILL CHANGE
+;	set	#PIN_TX,(PORT_TX)
+;	clr	#PIN_RX,(PORT_RX)
+;	set	#PIN_LED,(PORT_LED)
+	ld	a,#1101b	; 
 	ld	(data_pa),a	; Port A data (0=low/1=high)
+;	clr	#PIN_PWR,(PORT_PWR)
+;	clr	#PIN_USR,(PORT_USR)
 	ld	a,#0000b
 	ld	(data_pb),a	; Port B data (0=low/1=high)
 
-	; Wait 200ms
+	; Wait 200ms - on real hardware during this time I would lose my own power
 	ld	a,(g_timer2)
 	clr	c
 	adc	a,#8
@@ -395,12 +433,15 @@ HaltEnd:
 
 ; -----------------------------------------------------------------------------
 PODY_IO_Init:
-	; PIN A0  LED3    (active high)     = input pull low
-	; PIN A1  LED2    (active high)     = input no pull (will be output)
+	; PIN A0  LED3    (active high)     = output low
+	; PIN A1  LED2    (active high)     = input pull low
 	; PIN A2  LED     (active low)      = output high
 	; PIN A3          (unused)          = input pull high
-	ld	a,#0100b	; ...WILL CHANGE
+	ld	a,#0101b	; 
 	ld	(IOC_PA),a	; Port A direction (0=input/1=output)
+;	clr	#PIN_TX,(PORT_TX)
+;	clr	#PIN_RX,(PORT_RX)
+;	set	#PIN_LED,(PORT_LED)
 	ld	a,#1100b
 	ld	(data_pa),a	; Port A data (0=low/1=high)
 	ld	a,#0000b
@@ -416,6 +457,8 @@ PODY_IO_Init:
 	; Pin B3          (unused)      = input pull low
 	ld	a,#0001b
 	ld	(IOC_PB),a	; Port B dir (0=input/1=output)
+;	set	#PIN_PWR,(PORT_PWR)
+;	clr	#PIN_USR,(PORT_USR)
 	ld	a,#0001b
 	ld	(data_pb),a	; Port B data (0=low/1=high)
 	ld	a,#0010b
