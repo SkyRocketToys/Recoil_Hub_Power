@@ -54,6 +54,11 @@
 #include     "power.inc"
 
 ; -----------------------------------------------------------------------------
+; Hardware register values
+; -----------------------------------------------------------------------------
+WDT_KICK	equ	5	; Value to kick the watchdog with
+
+; -----------------------------------------------------------------------------
 ; User defined "registers" (SRAM variables)
 ; -----------------------------------------------------------------------------
 #define Optimal_MAH_PCH		; System MAH + PCH Optimal (Optimal MAH and PCH)
@@ -76,13 +81,13 @@ off_timer1	; Counts up every  25.6ms
 off_phase0	; Counts up every 307.2ms (phases: LED 0=off 1=on 2=off 3=on 4=off 5=on 6=poweroff)
 off_phase1	; 
 cpu_rx		; The value (0 or BIT_RX) of the cpu at the time the decision was made to power off
+rx_timer0	; Counts up every   1.6ms
+rx_timer1	; Counts up every  25.6ms
 }
-
 
 ; -----------------------------------------------------------------------------
 ; General Parameters for the program
 VINT_MAH        equ	00    ; The SRAM bank we want to use inside the interrupt [Mind you, Optima overrides this]
-
 Tim2_Speed	equ	256-100	; 100uS = 10kHz
 
 PORT_PWR	equ	data_pb
@@ -105,8 +110,14 @@ PORT_TX		equ	data_pa
 PIN_TX		equ	0
 BIT_TX		equ	1 << PIN_TX
 
+; Timing parameters
 TIMEOUT_FAST	equ	6	; Timeout if CPU acknowledges me
 TIMEOUT_SLOW	equ	30	; Timeout if CPU does not acknowledge
+TIMEOUT_PHASE	equ	192	; Timeout in 1.6ms units between phases (~300ms)
+TIMEOUT_RX	equ	64	; Timeout in 1.6ms units for CPU RX to cause power down
+SAT_HIGH	equ	15	; Timeout in 1.6ms units for button press to transition to high
+SAT_LOW		equ	15	; Timeout in 1.6ms units for button press to transition to low
+
 
 ; -----------------------------------------------------------------------------
 ; PROGRAM Entry points
@@ -200,7 +211,7 @@ PGMSRT:
 	ld	A,#0DH ; Short delay
 	ld	(24H),A ; 20 bit timer 0xD0000
 DELAY1:
-	ld	A,#05H
+	ld	A,#WDT_KICK
 	ld	(WDT),A ; Kick the watchdog
 
 	ld	A,(20H)
@@ -243,7 +254,7 @@ DELAY1:
 	clr	#PIN_LED,(PORT_LED)
 	
 	; Initialise the button variables
-	ld	a,#15
+	ld	a,#SAT_HIGH
 	ld	(ButtonCnt1),A
 	ld	a,#0
 	ld	(ButtonCnt0),A
@@ -268,7 +279,7 @@ MAIN_LOOP:
 	; Kick the watchdog
 	nop
 	nop
-	ld	a,#05h
+	ld	a,#WDT_KICK
 	ld	(WDT),a
 	set	#1,(SYS0) ; Enable interrupts
 	nop	; paranoid
@@ -284,6 +295,26 @@ MAIN_LOOP:
 Wait_irq:
 	cmp	a,(g_timer1)
 	jz	Wait_irq
+
+	; Check for input from CPU and debounce it (100ms required)
+	ld	A,(PowerOff)
+	jnz	Main_RxOK
+	ld	a,(PORT_RX)
+	and	a,#BIT_RX
+	jz	Main_RxLow
+	; Debounce
+	inc	(rx_timer0)
+	adr	(rx_timer1)
+	ld	a,(rx_timer1)
+	cmp	a,#TIMEOUT_RX.n1
+	jz	StartPowerOff
+	jmp	Main_RxOK
+
+Main_RxLow:
+	ld	a,#0
+	ld	(rx_timer0),a
+	ld	(rx_timer1),a
+Main_RxOK:
 	
 	; Check for input from user and debounce it (25ms required)
 	ld	a,(PORT_USR)
@@ -294,7 +325,7 @@ Wait_irq:
 	ld	a,#0
 	ld	(ButtonCnt0),a
 	ld	a,(ButtonCnt1)
-	cmp	a,#15
+	cmp	a,#SAT_HIGH
 	jz	Saturated1
 	inc	(ButtonCnt1)
 	jmp	NotSaturated
@@ -304,7 +335,7 @@ Main_UsrLow:
 	ld	a,#0
 	ld	(ButtonCnt1),a
 	ld	a,(ButtonCnt0)
-	cmp	a,#15
+	cmp	a,#SAT_LOW
 	jz	Saturated0
 	inc	(ButtonCnt0)
 	jmp	NotSaturated
@@ -337,6 +368,7 @@ StillInit:
 	ld	A,(PowerOff)
 	jnz	StillOn
 	; Start the sequence
+StartPowerOff:
 	ld	a,#1
 	ld	(PowerOff),A
 	ld	a,#0
@@ -356,7 +388,7 @@ StillOn:
 	inc	(off_timer0)
 	adr	(off_timer1)
 	ld	a,(off_timer1)
-	cmp	a,#12
+	cmp	a,#TIMEOUT_PHASE.n1
 	jnz	PowerSamePhase
 	; Increase the phase every 300 ms
 	ld	a,#0
