@@ -5,6 +5,21 @@
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
+; Note about options on the TR4P151AF
+;    Security: is unlock (can be locked i think)
+;    WDT: is disabled (can be enabled i think)
+;    RTCEN: is disabled (unused)
+;    PA3: is PA3 (unused pin, probably best with this schematic)
+;    XT32ENB: disabled (must be disabled with this schematic)
+;    EXT_OSC: disabled (must be disabled with this schematic)
+;    ADJ: IO (PB0 must be IO - non default option)
+;    IADJ: is 0
+;    MCK: is 8 MHz
+;    OSC: is 14.33 kHz (green mode unused)
+;    IR: disabled (must be disabled since PA1 is an input)
+; -----------------------------------------------------------------------------
+
+; -----------------------------------------------------------------------------
 ; PINOUT
 ; 1. VCC
 ; 2. PB1 = USR        (active high input)
