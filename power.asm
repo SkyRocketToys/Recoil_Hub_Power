@@ -1,7 +1,7 @@
 ; -----------------------------------------------------------------------------
 ; Recoil Gun Base Station Power control chip
 ; (c) 2017 HotGen Ltd.
-; Written for the TR4P151AT chip
+; Written for the TR4P151AF chip
 ; -----------------------------------------------------------------------------
 
 ; -----------------------------------------------------------------------------
@@ -12,9 +12,9 @@
 ;    PA3: is PA3 (unused pin, probably best with this schematic)
 ;    XT32ENB: disabled (must be disabled with this schematic)
 ;    EXT_OSC: disabled (must be disabled with this schematic)
-;    ADJ: IO (PB0 must be IO - non default option)
+;    ADJ: IO (PB0 must be I/O - non-default option)
 ;    IADJ: is 0
-;    MCK: is 8 MHz
+;    MCK: is 8 MHz (if this changes then the timing constants e.g. Tim2_Speed needs to change)
 ;    OSC: is 14.33 kHz (green mode unused)
 ;    IR: disabled (must be disabled since PA1 is an input)
 ; -----------------------------------------------------------------------------
@@ -27,13 +27,13 @@
 ; 4. PA3 = unused
 ; 
 ; 5. PA2 = LED        (active low output)
-; 6. PA1 = PWR_CTRL_1 (active high input)
+; 6. PA1 = PWR_CTRL_1 (active low input) (was active high)
 ; 7. PA0 = PWR_CTRL_2 (active high output)
 ; 8. GND
 ; 
 ; GPIO
 ; PA0 = PWR_CTRL_2/LED3 = output tx
-; PA1 = PWR_CTRL_1/LED2 = input rx (high when button pressed on board)
+; PA1 = PWR_CTRL_1/LED2 = input rx (low when button pressed on board)
 ; PA2 = LED             = output high (on or flashing)
 ; PA3 = unused          = input pull high
 ; PB0 = PWR             = output high
@@ -120,6 +120,7 @@ BIT_LED		equ	1 << PIN_LED
 PORT_RX		equ	data_pa
 PIN_RX		equ	1
 BIT_RX		equ	1 << PIN_RX
+XOR_RX		equ	BIT_RX ; Either BIT_RX for inverted or 0 for normal
 
 PORT_TX		equ	data_pa
 PIN_TX		equ	0
@@ -315,6 +316,7 @@ Wait_irq:
 	ld	A,(PowerOff)
 	jnz	Main_RxOK
 	ld	a,(PORT_RX)
+	xor	a,#XOR_RX
 	and	a,#BIT_RX
 	jz	Main_RxLow
 	; Debounce
@@ -392,6 +394,7 @@ StartPowerOff:
 	ld	(off_phase0),a
 	ld	(off_phase1),a
 	ld	a,(PORT_RX)
+	xor	a,#XOR_RX
 	and	a,#BIT_RX
 	ld	(cpu_rx),a
 	set	#PIN_TX,(PORT_TX) ; Tell the CPU we are switching off
@@ -413,6 +416,7 @@ StillOn:
 	adr	(off_phase1)
 
 	ld	a,(PORT_RX)
+	xor	a,#XOR_RX
 	and	a,#BIT_RX
 	xor	a,(cpu_rx)
 	jz	PowerWaitCpu
@@ -455,7 +459,7 @@ PowerNowOff:
 ;	set	#PIN_TX,(PORT_TX)
 ;	clr	#PIN_RX,(PORT_RX)
 ;	set	#PIN_LED,(PORT_LED)
-	ld	a,#1101b	; 
+	ld	a,#1111b	; 
 	ld	(data_pa),a	; Port A data (0=low/1=high)
 ;	clr	#PIN_PWR,(PORT_PWR)
 ;	clr	#PIN_USR,(PORT_USR)
@@ -489,13 +493,13 @@ PODY_IO_Init:
 ;	clr	#PIN_TX,(PORT_TX)
 ;	clr	#PIN_RX,(PORT_RX)
 ;	set	#PIN_LED,(PORT_LED)
-	ld	a,#1100b
+	ld	a,#1110b
 	ld	(data_pa),a	; Port A data (0=low/1=high)
 	ld	a,#0000b
 	ld	exio(pawk),a	; Port A wakeup - none
-	ld	a,#1000b
+	ld	a,#1010b
 	ld	exio(papu),a	; Port A pull up 100kOhm resistor
-	ld	a,#0010b
+	ld	a,#0000b
 	ld	exio(papl),a	; Port A pull down 100kOhm resistor
 
 	; Pin B0 PWR      (active high) = output high
