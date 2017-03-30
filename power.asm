@@ -19,6 +19,12 @@
 ;    IR: disabled (must be disabled since PA1 is an input)
 ; -----------------------------------------------------------------------------
 
+; *****************************************************************************
+; Notes about assembly language
+;   jc = jump if less than
+;   jnc = jump if greater or equal
+; *****************************************************************************
+
 ; -----------------------------------------------------------------------------
 ; PINOUT
 ; 1. VCC
@@ -91,6 +97,8 @@ ButtonOn	; Is the button on (1) or off (0)?
 ButtonPress	; Has the button been pressed?
 ButtonInit      ; Are we in the initial phase (where the button might be on)?
 PowerOff	; Power off the device
+g_pwm		; How bright the LED should be (15=full)
+
 off_timer0	; Counts up every   1.6ms
 off_timer1	; Counts up every  25.6ms
 off_phase0	; Counts up every 307.2ms (phases: LED 0=off 1=on 2=off 3=on 4=off 5=on 6=poweroff)
@@ -98,6 +106,17 @@ off_phase1	;
 cpu_rx		; The value (0 or BIT_RX) of the cpu at the time the decision was made to power off
 rx_timer0	; Counts up every   1.6ms
 rx_timer1	; Counts up every  25.6ms
+
+cpu_last_rx	; The last value (0 or BIT_RX) of the input pin
+rxb_timer0	; Counts up every   0.1ms
+rxb_timer1	; Counts up every   1.6ms
+rxb_timer2	; Counts up every  25.6ms
+rxb_timer3	; Counts up every 409.6ms
+rxb_bits	; The input payload
+rxb_count	; How many payload bits have been received
+rxb_cmd		; A received command (or 0=none)
+rxb_err0	; How many errors have I received?
+rxb_err1	; How many errors have I received?
 }
 
 ; -----------------------------------------------------------------------------
@@ -134,6 +153,17 @@ TIMEOUT_RX	equ	64	; Timeout in 1.6ms units for CPU RX to cause power down
 SAT_HIGH	equ	15	; Timeout in 1.6ms units for button press to transition to high
 SAT_LOW		equ	15	; Timeout in 1.6ms units for button press to transition to low
 
+; Timing for the rx protocol
+TIME_STEP	equ	500	; Time in 0.1ms units (50ms base tick)
+TIME_SLOP	equ	200	; Allow 20ms slop each way (10% slop on 4 unit periods)
+TIME_ONE_MIN	equ	TIME_STEP*1-TIME_SLOP	; 
+TIME_ONE_MAX	equ	TIME_STEP*1+TIME_SLOP	; 
+TIME_TWO_MIN	equ	TIME_STEP*2-TIME_SLOP	; 
+TIME_TWO_MAX	equ	TIME_STEP*2+TIME_SLOP	; 
+TIME_FOUR_MIN	equ	TIME_STEP*4-TIME_SLOP	; 
+TIME_FOUR_MAX	equ	TIME_STEP*4+TIME_SLOP	; 
+TIME_IDLE_MIN	equ	TIME_STEP*6		; Not used; assumed to be 16*16*16 = 409.6ms
+
 ; Commands for the other side to send
 CMD_NULL	equ	0	; Bits 0x001EA on the wire
 CMD_REBOOTING	equ	1	; Bits 0x003D6 on the wire
@@ -143,6 +173,8 @@ CMD_ERROR_1	equ	8	; Bits 0x003CA on the wire
 CMD_ERROR_2	equ	10	; Bits 0x00792 on the wire
 CMD_ERROR_3	equ	11	; Bits 0x00F26 on the wire
 CMD_POWER_OFF	equ	13	; Bits 0x00F36 on the wire
+
+
 
 ; -----------------------------------------------------------------------------
 ; PROGRAM Entry points
@@ -207,10 +239,148 @@ Timer1_Acked:
 	adr	(g_timer2)
 	adr	(g_timer3)
 	
+	; Support fake PWM on the LED
+	ld	A,(g_timer0)
+	cmp	A,(g_pwm)
+	jc	PwmLedOn ; jump on less
+	set	#PIN_LED,(PORT_LED) ; Turn off the LED
+	jmp	PwmLedDone
+PwmLedOn:
+	clr	#PIN_LED,(PORT_LED)
+PwmLedDone:
+
+	; Look at the rx bits
+	inc	(rxb_timer0)
+	adr	(rxb_timer1)
+	adr	(rxb_timer2)
+	jc	RxOverflow ; We have overflowed (409.6ms) so this is idle
+
+	; Look at the bits	
+	ld	a,(PORT_RX)
+	and	a,#BIT_RX
+	cmp	A,(cpu_last_rx)
+	jz	RxNotChanged
+	; A transition has occurred
+	ld	(cpu_last_rx),A
+
+	; Compare with IDLE time
+	ld	A,(rxb_timer3)
+	jnz	RxReset
+
+	; Compare with TIME_ONE_MIN
+	ld	A,(rxb_timer0)
+	cmp	A,#TIME_ONE_MIN.n0
+	ld	A,(rxb_timer1)
+	sbc	A,#TIME_ONE_MIN.n1
+	ld	A,(rxb_timer2)
+	sbc	A,#TIME_ONE_MIN.n2
+	jc	RxError
+
+	; Compare with TIME_ONE_MAX
+	ld	A,(rxb_timer0)
+	cmp	A,#TIME_ONE_MAX.n0
+	ld	A,(rxb_timer1)
+	sbc	A,#TIME_ONE_MAX.n1
+	ld	A,(rxb_timer2)
+	sbc	A,#TIME_ONE_MAX.n2
+	jc	RxOne
+
+	; Compare with TIME_TWO_MIN
+	ld	A,(rxb_timer0)
+	cmp	A,#TIME_TWO_MIN.n0
+	ld	A,(rxb_timer1)
+	sbc	A,#TIME_TWO_MIN.n1
+	ld	A,(rxb_timer2)
+	sbc	A,#TIME_TWO_MIN.n2
+	jc	RxError
+
+	; Compare with TIME_TWO_MAX
+	ld	A,(rxb_timer0)
+	cmp	A,#TIME_TWO_MAX.n0
+	ld	A,(rxb_timer1)
+	sbc	A,#TIME_TWO_MAX.n1
+	ld	A,(rxb_timer2)
+	sbc	A,#TIME_TWO_MAX.n2
+	jc	RxTwo
+
+	; Compare with TIME_FOUR_MIN
+	ld	A,(rxb_timer0)
+	cmp	A,#TIME_FOUR_MIN.n0
+	ld	A,(rxb_timer1)
+	sbc	A,#TIME_FOUR_MIN.n1
+	ld	A,(rxb_timer2)
+	sbc	A,#TIME_FOUR_MIN.n2
+	jc	RxError
+
+	; Compare with TIME_FOUR_MAX
+	ld	A,(rxb_timer0)
+	cmp	A,#TIME_FOUR_MAX.n0
+	ld	A,(rxb_timer1)
+	sbc	A,#TIME_FOUR_MAX.n1
+	ld	A,(rxb_timer2)
+	sbc	A,#TIME_FOUR_MAX.n2
+	jc	RxFour
+	jmp	RxOverflow
+
+RxChanged:
+	ld	a,#0
+	ld	(rxb_timer0),a
+	ld	(rxb_timer1),a
+	ld	(rxb_timer2),a
+	ld	(rxb_timer3),a
+
+RxNotChanged:
+
 Timer2_Acked:
-	
 	ld	a,(A_SRT) ; Restore the A register
 	reti
+
+; Flag as a long transition, no packet
+RxOverflow:
+	ld	a,#1
+	ld	(rxb_timer3),a
+	ld	a,#0
+	ld	(rxb_bits),A
+	ld	(rxb_count),A
+	ld	a,(PORT_RX)
+	and	a,#BIT_RX
+	ld	(cpu_last_rx),A
+	jmp	RxNotChanged
+
+RxError:
+	; For debugging - count errors
+	inc	(rxb_err0)
+	adr	(rxb_err1)
+	
+RxReset:
+	ld	a,#0
+	ld	(rxb_bits),A
+	ld	(rxb_count),A
+	jmp	RxChanged
+
+; Receive a zero payload bit (one time unit pulse)
+RxOne:
+	inc	(rxb_count)
+	clr	c
+	rrc	(rxb_bits)
+	jmp	RxChanged
+		
+; Receive a one payload bit (two time unit pulse)
+RxTwo:
+	inc	(rxb_count)
+	set	c
+	rrc	(rxb_bits)
+	jmp	RxChanged
+	
+; Receive an end of packet pulse (four time unit pulse)
+RxFour:
+	ld	A,(rxb_count)
+	cmp	A,#4
+	jnz	RxError
+	; We have received a command!
+	ld	A,(rxb_bits)
+	ld	(rxb_cmd),A
+	jmp	RxReset
 
 
 ; -----------------------------------------------------------------------------
@@ -276,6 +446,8 @@ DELAY1:
 	call	Timer2_Init
 
 	; Turn on the LED
+	ld	A,#15 ; Full on
+	ld	(g_pwm),A
 	clr	#PIN_LED,(PORT_LED)
 	
 	; Initialise the button variables
@@ -452,10 +624,14 @@ PowerSamePhase:
 	and	a,#1
 	jz	PowerOffLed
 	; Turn on the LED
-	clr	#PIN_LED,(PORT_LED)
+	ld	A,#8
+	ld	(g_pwm),A
+;	clr	#PIN_LED,(PORT_LED)
 	jmp	PowerStillOn
 PowerOffLed:
-	set	#PIN_LED,(PORT_LED)
+	ld	A,#0
+	ld	(g_pwm),A
+;	set	#PIN_LED,(PORT_LED)
 	
 PowerStillOn:
 
