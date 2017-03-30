@@ -458,6 +458,8 @@ DELAY1:
 	ld	A,#4 ; Low for booting
 	call	Led_SetSolid
 	clr	#PIN_LED,(PORT_LED)
+	ld	A,#1
+	ld	(led_glow),A
 	
 	; Initialise the button variables
 	ld	a,#SAT_HIGH
@@ -875,7 +877,7 @@ Led_Flash:
 	adr	(led_timer1)	; Every 25.6ms
 	adr	(led_timer2)	; Every 409.6ms
 	ld	A,(led_glow)
-;	jnz	LF_Glow
+	jnz	LF_Glow
 	
 	ld	A,(led_timer1)
 	cmp	A,#8	; ~200ms
@@ -906,5 +908,15 @@ LF_Done:
 	rets
 
 LF_Glow:
+	ld	a,(led_timer2)
+	and	a,#1
+	jnz	LF_GlowDown
+	ld	a,(led_timer1)
+	ld	(led_pwm),A
+	rets
+LF_GlowDown:
+	ld	a,(led_timer1)
+	xor	a,#15
+	ld	(led_pwm),A
 	rets
 	
