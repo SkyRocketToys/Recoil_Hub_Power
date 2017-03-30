@@ -134,6 +134,15 @@ TIMEOUT_RX	equ	64	; Timeout in 1.6ms units for CPU RX to cause power down
 SAT_HIGH	equ	15	; Timeout in 1.6ms units for button press to transition to high
 SAT_LOW		equ	15	; Timeout in 1.6ms units for button press to transition to low
 
+; Commands for the other side to send
+CMD_NULL	equ	0	; Bits 0x001EA on the wire
+CMD_REBOOTING	equ	1	; Bits 0x003D6 on the wire
+CMD_BOOTED	equ	2	; Bits 0x003D2 on the wire
+CMD_ACK_POWER	equ	3	; Bits 0x007A6 on the wire
+CMD_ERROR_1	equ	8	; Bits 0x003CA on the wire
+CMD_ERROR_2	equ	10	; Bits 0x00792 on the wire
+CMD_ERROR_3	equ	11	; Bits 0x00F26 on the wire
+CMD_POWER_OFF	equ	13	; Bits 0x00F36 on the wire
 
 ; -----------------------------------------------------------------------------
 ; PROGRAM Entry points
@@ -324,7 +333,7 @@ Wait_irq:
 	adr	(rx_timer1)
 	ld	a,(rx_timer1)
 	cmp	a,#TIMEOUT_RX.n1
-	jz	StartPowerOff
+;;	jz	StartPowerOff	; DEBUG BODGE - DONT LET CPU TURN ME OFF
 	jmp	Main_RxOK
 
 Main_RxLow:
