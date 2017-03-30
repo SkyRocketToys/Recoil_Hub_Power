@@ -97,15 +97,12 @@ ButtonOn	; Is the button on (1) or off (0)?
 ButtonPress	; Has the button been pressed?
 ButtonInit      ; Are we in the initial phase (where the button might be on)?
 PowerOff	; Power off the device
-g_pwm		; How bright the LED should be (15=full)
+led_pwm		; How bright the LED should be (15=full)
 
 off_timer0	; Counts up every   1.6ms
 off_timer1	; Counts up every  25.6ms
 off_phase0	; Counts up every 307.2ms (phases: LED 0=off 1=on 2=off 3=on 4=off 5=on 6=poweroff)
 off_phase1	; 
-cpu_rx		; The value (0 or BIT_RX) of the cpu at the time the decision was made to power off
-rx_timer0	; Counts up every   1.6ms
-rx_timer1	; Counts up every  25.6ms
 
 cpu_last_rx	; The last value (0 or BIT_RX) of the input pin
 rxb_timer0	; Counts up every   0.1ms
@@ -117,6 +114,18 @@ rxb_count	; How many payload bits have been received
 rxb_cmd		; A received command (or 0=none)
 rxb_err0	; How many errors have I received?
 rxb_err1	; How many errors have I received?
+pwr_ack		; Non zero if the CPU has acknowledged the power out
+
+led_pwm_base	; For supporting flash effects
+led_flash0	; Flash effects for LED
+led_flash1	; Flash effects for LED
+led_flash2	; Flash effects for LED
+led_flash3	; Flash effects for LED
+; Second bank of RAM
+led_timer0	; Counts up every   1.6ms
+led_timer1	; Counts up every  25.6ms
+led_timer2	; Counts up every  409.6ms
+led_glow	; 1 for glow
 }
 
 ; -----------------------------------------------------------------------------
@@ -241,7 +250,7 @@ Timer1_Acked:
 	
 	; Support fake PWM on the LED
 	ld	A,(g_timer0)
-	cmp	A,(g_pwm)
+	cmp	A,(led_pwm)
 	jc	PwmLedOn ; jump on less
 	set	#PIN_LED,(PORT_LED) ; Turn off the LED
 	jmp	PwmLedDone
@@ -446,8 +455,8 @@ DELAY1:
 	call	Timer2_Init
 
 	; Turn on the LED
-	ld	A,#15 ; Full on
-	ld	(g_pwm),A
+	ld	A,#4 ; Low for booting
+	call	Led_SetSolid
 	clr	#PIN_LED,(PORT_LED)
 	
 	; Initialise the button variables
@@ -493,26 +502,102 @@ Wait_irq:
 	cmp	a,(g_timer1)
 	jz	Wait_irq
 
-	; Check for input from CPU and debounce it (100ms required)
-	ld	A,(PowerOff)
-	jnz	Main_RxOK
-	ld	a,(PORT_RX)
-	xor	a,#XOR_RX
-	and	a,#BIT_RX
-	jz	Main_RxLow
-	; Debounce
-	inc	(rx_timer0)
-	adr	(rx_timer1)
-	ld	a,(rx_timer1)
-	cmp	a,#TIMEOUT_RX.n1
-;;	jz	StartPowerOff	; DEBUG BODGE - DONT LET CPU TURN ME OFF
-	jmp	Main_RxOK
+	; Make the LED glow/flash
+	call	Led_Flash
 
-Main_RxLow:
-	ld	a,#0
-	ld	(rx_timer0),a
-	ld	(rx_timer1),a
-Main_RxOK:
+	; Check for commands from CPU
+	ld	A,(PowerOff)
+	jnz	NoCmd
+	ld	a,(rxb_cmd)
+	jz	NoCmd
+	cmp	a,#CMD_REBOOTING
+	jz	CmdRebooting
+	cmp	a,#CMD_BOOTED
+	jz	CmdBooted
+	cmp	a,#CMD_ACK_POWER
+	jz	CmdAckPower
+	cmp	a,#CMD_ERROR_1
+	jz	CmdError1
+	cmp	a,#CMD_ERROR_2
+	jz	CmdError2
+	cmp	a,#CMD_ERROR_3
+	jz	CmdError3
+	cmp	a,#CMD_POWER_OFF
+	jz	CmdPowerOff
+	jmp	DoneCmd
+
+CmdRebooting:
+	ld	A,#4
+	ld	(led_pwm_base),A
+	ld	A,#1
+	ld	(led_glow),A
+	ld	A,#0101b
+	ld	(led_flash0),a
+	ld	(led_flash1),a
+	ld	(led_flash2),a
+	ld	(led_flash3),a
+	jmp	DoneCmd
+
+CmdBooted:
+	ld	A,#15
+	call	Led_SetSolid
+	jmp	DoneCmd
+
+CmdAckPower:
+	ld	a,#1
+	ld	(pwr_ack),A
+	jmp	DoneCmd
+
+CmdError1:
+	ld	A,#10
+	ld	(led_pwm_base),A
+	ld	A,#0
+	ld	(led_glow),A
+	ld	A,#1110b
+	ld	(led_flash0),a
+	ld	A,#1111b
+	ld	(led_flash1),a
+	ld	(led_flash2),a
+	ld	(led_flash3),a
+	jmp	DoneCmd
+
+CmdError2:
+	ld	A,#10
+	ld	(led_pwm_base),A
+	ld	A,#0
+	ld	(led_glow),A
+	ld	A,#1010b
+	ld	(led_flash0),a
+	ld	A,#1111b
+	ld	(led_flash1),a
+	ld	(led_flash2),a
+	ld	(led_flash3),a
+	jmp	DoneCmd
+
+CmdError3:
+	ld	A,#10
+	ld	(led_pwm_base),A
+	ld	A,#0
+	ld	(led_glow),A
+	ld	A,#1010b
+	ld	(led_flash0),a
+	ld	A,#1110b
+	ld	(led_flash1),a
+	ld	A,#1111b
+	ld	(led_flash2),a
+	ld	(led_flash3),a
+	jmp	DoneCmd
+
+CmdPowerOff:
+	ld	A,#0
+	ld	(rxb_cmd),A
+	jmp	StartPowerOff
+
+; We have processed the command
+DoneCmd:
+	ld	A,#0
+	ld	(rxb_cmd),A
+NoCmd:
 	
 	; Check for input from user and debounce it (25ms required)
 	ld	a,(PORT_USR)
@@ -574,10 +659,7 @@ StartPowerOff:
 	ld	(off_timer1),a
 	ld	(off_phase0),a
 	ld	(off_phase1),a
-	ld	a,(PORT_RX)
-	xor	a,#XOR_RX
-	and	a,#BIT_RX
-	ld	(cpu_rx),a
+	ld	(pwr_ack),A
 	set	#PIN_TX,(PORT_TX) ; Tell the CPU we are switching off
 StillOn:
 
@@ -596,10 +678,7 @@ StillOn:
 	inc	(off_phase0)
 	adr	(off_phase1)
 
-	ld	a,(PORT_RX)
-	xor	a,#XOR_RX
-	and	a,#BIT_RX
-	xor	a,(cpu_rx)
+	ld	a,(pwr_ack)
 	jz	PowerWaitCpu
 	; Fast timeout
 	ld	a,(off_phase0)
@@ -625,13 +704,11 @@ PowerSamePhase:
 	jz	PowerOffLed
 	; Turn on the LED
 	ld	A,#8
-	ld	(g_pwm),A
-;	clr	#PIN_LED,(PORT_LED)
+	call	Led_SetSolid
 	jmp	PowerStillOn
 PowerOffLed:
 	ld	A,#0
-	ld	(g_pwm),A
-;	set	#PIN_LED,(PORT_LED)
+	call	Led_SetSolid
 	
 PowerStillOn:
 
@@ -778,3 +855,56 @@ Timr2_Init_End:
 	rets
 
 ; -----------------------------------------------------------------------------
+; Input: A = the LED value
+Led_SetSolid:
+	ld	(led_pwm_base),A
+	ld	A,#0
+	ld	(led_glow),A
+	ld	A,#1111b
+	ld	(led_flash0),A
+	ld	(led_flash1),A
+	ld	(led_flash2),A
+	ld	(led_flash3),A
+	rets
+
+; -----------------------------------------------------------------------------
+; Flash the LED according to the flash characteristics
+Led_Flash:
+	; Keep track of time
+	inc	(led_timer0)	; Every 1.6ms
+	adr	(led_timer1)	; Every 25.6ms
+	adr	(led_timer2)	; Every 409.6ms
+	ld	A,(led_glow)
+;	jnz	LF_Glow
+	
+	ld	A,(led_timer1)
+	cmp	A,#8	; ~200ms
+	jnz	LF_Done
+
+	; Every so often, flash the LED
+	ld	A,#0
+	ld	(led_timer0),A
+	ld	(led_timer1),A
+	clr	c
+	rrc	(led_flash3)
+	rrc	(led_flash2)
+	rrc	(led_flash1)
+	rrc	(led_flash0)
+	jc	LF_On
+	; We are in the off phase of a flash
+	ld	a,#0
+	ld	(led_pwm),A
+	rets
+LF_On:
+	; We are in the on phase of a flash
+	ld	A,(led_flash3)	; Rotate the bit back in there
+	or	A,#8
+	ld	(led_flash3),A
+	ld	A,(led_pwm_base)
+	ld	(led_pwm),A
+LF_Done:
+	rets
+
+LF_Glow:
+	rets
+	
