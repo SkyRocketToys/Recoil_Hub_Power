@@ -125,7 +125,15 @@ led_flash3	; Flash effects for LED
 led_timer0	; Counts up every   1.6ms
 led_timer1	; Counts up every  25.6ms
 led_timer2	; Counts up every  409.6ms
-led_glow	; 1 for glow
+led_glow	; 1 for boot glow
+led_glow2	; 1 for held button glow
+ButtonOn0	; Counts up every    1.6ms
+ButtonOn1	; Counts up every   25.6ms
+ButtonOn2	; Counts up every  409.6ms
+g_pwd_reset	; 1 when we are sending password reset command to Atheros chip
+g_pwd_time0	; Counts up every    1.6ms
+g_pwd_time1	; Counts up every   25.6ms
+g_pwd_pulse	; Counts up every   pulse
 }
 
 ; -----------------------------------------------------------------------------
@@ -161,6 +169,12 @@ TIMEOUT_PHASE	equ	192	; Timeout in 1.6ms units between phases (~300ms)
 TIMEOUT_RX	equ	64	; Timeout in 1.6ms units for CPU RX to cause power down
 SAT_HIGH	equ	15	; Timeout in 1.6ms units for button press to transition to high
 SAT_LOW		equ	15	; Timeout in 1.6ms units for button press to transition to low
+TIMEOUT_PASSWORD equ	3072	; Timeout in 1.6ms units for the keypress (~5s)
+TIMEOUT_GLOW	equ	1280	; Timeout in 1.6ms units for the keypress (~2s)
+TIME_PWD_HIGH	equ	62	; Timeout in 1.6ms units for the password pulse
+TIME_PWD_LOW	equ	TIME_PWD_HIGH
+TIME_PWD_ALL	equ	TIME_PWD_HIGH+TIME_PWD_LOW
+NUM_PWD_PULSES	equ	8	; Enough pulses for the CPU to see it (1.6s)
 
 ; Timing for the rx protocol
 TIME_STEP	equ	500	; Time in 0.1ms units (50ms base tick)
@@ -641,15 +655,104 @@ NotSaturated:
 	jz	StillOff
 	ld	a,#1
 	ld	(ButtonPress),a
+	; How low are we holding the button?
+	inc	(ButtonOn0)
+	adr	(ButtonOn1)
+	adr	(ButtonOn2)
+	; Are we holding the button long enough to reset the password?
+	ld	a,(ButtonOn0)
+	cmp	a,#TIMEOUT_PASSWORD.n0
+	ld	a,(ButtonOn1)
+	sbc	a,#TIMEOUT_PASSWORD.n1
+	ld	a,(ButtonOn2)
+	sbc	a,#TIMEOUT_PASSWORD.n2
+	jnc	ResetPassword
+	
+	; Are we holding the button long enough to start glowing?
+	ld	a,(ButtonOn0)
+	cmp	a,#TIMEOUT_GLOW.n0
+	ld	a,(ButtonOn1)
+	sbc	a,#TIMEOUT_GLOW.n1
+	ld	a,(ButtonOn2)
+	sbc	a,#TIMEOUT_GLOW.n2
+	jc	StillInit
+	; Start glowing
+	ld	a,#1
+	ld	(led_glow2),a
+	jmp	StillInit
+	
+ResetPassword:
+	ld	a,#1
+	ld	(g_pwd_reset),a
+	ld	a,#0
+	ld	(g_pwd_pulse),A
+	jmp	StillInit
+	
 StillOff:
+	; Reset the button hold counter
+	ld	a,#0
+	ld	(ButtonOn0),a
+	ld	(ButtonOn1),a
+	ld	(ButtonOn2),a
 StillInit:
+
+	; Check for sending pulses to the CPU
+	ld	A,(PowerOff)
+	jnz	NoPwdResetPulse
+	ld	A,(g_pwd_reset)
+	jz	NoPwdResetPulse
+
+	inc	(g_pwd_time0)
+	adr	(g_pwd_time1)
+	ld	A,(g_pwd_time0)
+	cmp	a,#TIME_PWD_ALL.n0
+	ld	A,(g_pwd_time1)
+	sbc	a,#TIME_PWD_ALL.n1
+	jc	NotPwdOver
+	; The password pulse has ticked
+	clr	#PIN_TX,(PORT_TX) ; Tell the CPU we are switching off
+	ld	a,#0
+	ld	(g_pwd_time0),A
+	ld	(g_pwd_time1),A
+	inc	(g_pwd_pulse)
+	ld	A,(g_pwd_pulse)
+	cmp	a,#NUM_PWD_PULSES
+	jc	NoPwdResetPulse
+	; We have sent enough pulses
+	ld	a,#0
+	ld	(g_pwd_pulse),A
+	ld	(g_pwd_reset),A
+	ld	(g_pwd_time0),A
+	ld	(g_pwd_time1),A
+
+NotPwdOver:
+	ld	A,(g_pwd_time0)
+	cmp	a,#TIME_PWD_HIGH.n0
+	ld	A,(g_pwd_time1)
+	sbc	a,#TIME_PWD_HIGH.n1
+	jc	NotPwdHigh
+	set	#PIN_TX,(PORT_TX) ; Tell the CPU to reset password
+	jmp	NoPwdResetPulse
+NotPwdHigh:
+	clr	#PIN_TX,(PORT_TX) ; 
+NoPwdResetPulse:
+
 
 	; Have we released the button after a press?
 	ld	A,(ButtonOn)
 	jnz	StillOn
 	ld	A,(ButtonPress)
 	jz	StillOn
-	; We have pressed and released the button: trigger the off sequence
+	; We have pressed and released the button: was it turn off or password reset?
+	ld	a,(led_glow2)
+	jz	NotGlow2
+	; Cancel the led glowing but dont turn off
+	ld	a,#0
+	ld	(led_glow2),a
+	jmp	PowerStillOn
+NotGlow2:
+	
+	; Trigger the off sequence (if it is not already triggered)
 	ld	A,(PowerOff)
 	jnz	StillOn
 	; Start the sequence
@@ -662,6 +765,7 @@ StartPowerOff:
 	ld	(off_phase0),a
 	ld	(off_phase1),a
 	ld	(pwr_ack),A
+	ld	(g_pwd_reset),A
 	set	#PIN_TX,(PORT_TX) ; Tell the CPU we are switching off
 StillOn:
 
@@ -876,6 +980,10 @@ Led_Flash:
 	inc	(led_timer0)	; Every 1.6ms
 	adr	(led_timer1)	; Every 25.6ms
 	adr	(led_timer2)	; Every 409.6ms
+	ld	A,(g_pwd_reset)
+	jnz	LF_Password
+	ld	A,(led_glow2)
+	jnz	LF_Glow2
 	ld	A,(led_glow)
 	jnz	LF_Glow
 	
@@ -907,6 +1015,7 @@ LF_On:
 LF_Done:
 	rets
 
+; Glow on bootup (0 to 15 to 0 PWM)
 LF_Glow:
 	ld	a,(led_timer2)
 	and	a,#1
@@ -917,6 +1026,41 @@ LF_Glow:
 LF_GlowDown:
 	ld	a,(led_timer1)
 	xor	a,#15
+	ld	(led_pwm),A
+	rets
+
+; Glow on button held (15 to 8 to 15 PWM)
+LF_Glow2:
+	ld	a,(led_timer1)
+	and	a,#8
+	jz	LF_Glow2Down
+	ld	a,(led_timer1)
+	ld	(led_pwm),A
+	rets
+LF_Glow2Down:
+	ld	a,(led_timer1)
+	xor	a,#15
+	ld	(led_pwm),A
+	rets
+	
+; Throb on password reset being sent
+LF_Password:
+	ld	a,(led_timer1)
+	and	a,#1
+	jz	LF_PwdOff
+	ld	a,(led_timer1)
+	and	a,#8
+	jz	LF_PwdDown
+	ld	a,(led_timer1)
+	ld	(led_pwm),A
+	rets
+LF_PwdDown:
+	ld	a,(led_timer1)
+	xor	a,#15
+	ld	(led_pwm),A
+	rets
+LF_PwdOff:
+	ld	a,(g_pwd_pulse)
 	ld	(led_pwm),A
 	rets
 	
