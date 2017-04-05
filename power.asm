@@ -114,7 +114,7 @@ rxb_count	; How many payload bits have been received
 rxb_cmd		; A received command (or 0=none)
 rxb_err0	; How many errors have I received?
 rxb_err1	; How many errors have I received?
-pwr_ack		; Non zero if the CPU has acknowledged the power out
+pwr_ack		; Non zero if the CPU has acknowledged the power out (but it still wants 8 seconds to power down)
 
 led_pwm_base	; For supporting flash effects
 led_flash0	; Flash effects for LED
@@ -163,7 +163,7 @@ PIN_TX		equ	0
 BIT_TX		equ	1 << PIN_TX
 
 ; Timing parameters
-TIMEOUT_FAST	equ	6	; Timeout if CPU acknowledges me
+TIMEOUT_FAST	equ	24	; Timeout if CPU acknowledges me
 TIMEOUT_SLOW	equ	30	; Timeout if CPU does not acknowledge
 TIMEOUT_PHASE	equ	192	; Timeout in 1.6ms units between phases (~300ms)
 TIMEOUT_RX	equ	64	; Timeout in 1.6ms units for CPU RX to cause power down
@@ -560,6 +560,9 @@ CmdBooted:
 CmdAckPower:
 	ld	a,#1
 	ld	(pwr_ack),A
+	ld	a,#0
+	ld	(off_phase0),A
+	ld	(off_phase1),A
 	ld	A,#4
 	call	Led_SetSolid
 	jmp	DoneCmd
@@ -1059,7 +1062,7 @@ LF_Glow2Down:
 	
 ; Throb on password reset being sent
 LF_Password:
-	ld	a,(led_timer1)
+	ld	a,(led_timer2)
 	and	a,#1
 	jz	LF_PwdOff
 	ld	a,(led_timer1)
