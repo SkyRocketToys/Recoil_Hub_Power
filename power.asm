@@ -96,7 +96,7 @@ ButtonCnt1	; How many samples 1.6ms of the button have been on?
 ButtonOn	; Is the button on (1) or off (0)?
 ButtonPress	; Has the button been pressed?
 ButtonInit      ; Are we in the initial phase (where the button might be on)?
-PowerOff	; Power off the device
+PowerOff	; Power off the device (if non-zero)
 led_pwm		; How bright the LED should be (15=full)
 
 off_timer0	; Counts up every   1.6ms
@@ -415,7 +415,6 @@ PGMSRT:
 	ld	(USER2),A	; This nybble could be used by user code (but isn't)
 
 	; Initialise input/output (power on but no LED)
-	ldpch	PODY_IO_Init
 	call	PODY_IO_Init
 
 	; Delay loop (uses SRAM before it is cleared)
@@ -443,29 +442,23 @@ DELAY1:
 	jnc	DELAY1
 
 	; Initialise input/output again
-	ldpch	PODY_IO_Init
 	call	PODY_IO_Init
 
 	; Clear Banks 0..3 of SRAM
 	ldmah	#3
-	ldpch	Clear_SRAM_INIT
 	call	Clear_SRAM_INIT
 
 	ldmah	#2
-	ldpch	Clear_SRAM_INIT
 	call	Clear_SRAM_INIT
 
 	ldmah	#1
-	ldpch	Clear_SRAM_INIT
 	call	Clear_SRAM_INIT
 
 	ldmah	#0
-	ldpch	Clear_SRAM_INIT
 	call	Clear_SRAM_INIT
 	
 	; Setup timer2 interrupt every 100uS
 	ldmah	#0
-	ldpch	Timer2_Init
 	call	Timer2_Init
 
 	; Turn on the LED
@@ -521,7 +514,12 @@ Wait_irq:
 	; Make the LED glow/flash
 	call	Led_Flash
 
-	; Check for commands from CPU
+	; Check for commands from CPU (even when powering off)
+	ld	a,(rxb_cmd)
+	cmp	a,#CMD_ACK_POWER
+	jz	CmdAckPower
+	
+	; Check for commands from CPU (only when not powering off)
 	ld	A,(PowerOff)
 	jnz	NoCmd
 	ld	a,(rxb_cmd)
@@ -530,8 +528,8 @@ Wait_irq:
 	jz	CmdRebooting
 	cmp	a,#CMD_BOOTED
 	jz	CmdBooted
-	cmp	a,#CMD_ACK_POWER
-	jz	CmdAckPower
+;	cmp	a,#CMD_ACK_POWER
+;	jz	CmdAckPower
 	cmp	a,#CMD_ERROR_1
 	jz	CmdError1
 	cmp	a,#CMD_ERROR_2
@@ -562,6 +560,8 @@ CmdBooted:
 CmdAckPower:
 	ld	a,#1
 	ld	(pwr_ack),A
+	ld	A,#4
+	call	Led_SetSolid
 	jmp	DoneCmd
 
 CmdError1:
@@ -680,12 +680,17 @@ NotSaturated:
 	ld	a,#1
 	ld	(led_glow2),a
 	jmp	StillInit
-	
+
+; This is called repeatedly when the user holds the button down for more than 5 seconds	
 ResetPassword:
 	ld	a,#1
 	ld	(g_pwd_reset),a
 	ld	a,#0
 	ld	(g_pwd_pulse),A
+	ld	(g_pwd_time0),A	; Wait until user releases button before telling CPU
+	ld	(g_pwd_time1),A
+	ld	a,#14	; safely high number (will increment to 15 which is within a nybble)
+	ld	(ButtonOn2),A	; don't overflow to zero, but keep it higher than TIMEOUT_PASSWORD.n2
 	jmp	StillInit
 	
 StillOff:
@@ -710,7 +715,7 @@ StillInit:
 	sbc	a,#TIME_PWD_ALL.n1
 	jc	NotPwdOver
 	; The password pulse has ticked
-	clr	#PIN_TX,(PORT_TX) ; Tell the CPU we are switching off
+	clr	#PIN_TX,(PORT_TX) ; 
 	ld	a,#0
 	ld	(g_pwd_time0),A
 	ld	(g_pwd_time1),A
@@ -724,6 +729,9 @@ StillInit:
 	ld	(g_pwd_reset),A
 	ld	(g_pwd_time0),A
 	ld	(g_pwd_time1),A
+	; Go into rebooting state
+	ld	A,#1
+	ld	(led_glow),A
 
 NotPwdOver:
 	ld	A,(g_pwd_time0)
@@ -749,6 +757,7 @@ NoPwdResetPulse:
 	; Cancel the led glowing but dont turn off
 	ld	a,#0
 	ld	(led_glow2),a
+	ld	(ButtonPress),A
 	jmp	PowerStillOn
 NotGlow2:
 	
@@ -809,7 +818,13 @@ PowerSamePhase:
 	and	a,#1
 	jz	PowerOffLed
 	; Turn on the LED
+	ld	A,(pwr_ack)
+	jnz	PowerOnAck
 	ld	A,#8
+	call	Led_SetSolid
+	jmp	PowerStillOn
+PowerOnAck:
+	ld	A,#4
 	call	Led_SetSolid
 	jmp	PowerStillOn
 PowerOffLed:
@@ -818,8 +833,7 @@ PowerOffLed:
 	
 PowerStillOn:
 
-	LDPCH	MAIN_LOOP
-	JMP	MAIN_LOOP
+	jmp	MAIN_LOOP
 	
 ; -----------------------------------------------------------------------------
 ; Turn off the power to the CPU
@@ -847,7 +861,6 @@ Wait2_irq:
 	nop
 	halt 
 HaltEnd:
-	ldpch	HaltEnd
 	jmp	HaltEnd
 
 ; -----------------------------------------------------------------------------
@@ -966,6 +979,7 @@ Led_SetSolid:
 	ld	(led_pwm_base),A
 	ld	A,#0
 	ld	(led_glow),A
+	ld	(led_glow2),A
 	ld	A,#1111b
 	ld	(led_flash0),A
 	ld	(led_flash1),A
