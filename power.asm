@@ -33,13 +33,13 @@
 ; 4. PA3 = unused
 ; 
 ; 5. PA2 = LED        (active low output)
-; 6. PA1 = PWR_CTRL_1 (active low input) (was active high)
-; 7. PA0 = PWR_CTRL_2 (active high output)
+; 6. PA1 = PWR_CTRL_RX (active low input) (was active high)
+; 7. PA0 = PWR_CTRL_TX (active high output)
 ; 8. GND
 ; 
 ; GPIO
-; PA0 = PWR_CTRL_2/LED3 = output tx
-; PA1 = PWR_CTRL_1/LED2 = input rx (low when button pressed on board)
+; PA0 = PWR_CTRL_TX/LED3 = output tx
+; PA1 = PWR_CTRL_RX/LED2 = input rx (low when button pressed on board)
 ; PA2 = LED             = output high (on or flashing)
 ; PA3 = unused          = input pull high
 ; PB0 = PWR             = output high
